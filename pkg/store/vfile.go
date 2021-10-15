@@ -1,10 +1,14 @@
 package store
 
 import (
+	"bytes"
+	"fmt"
 	"logstore/pkg/common"
 	"os"
 	"sync"
 	"sync/atomic"
+
+	log "github.com/sirupsen/logrus"
 )
 
 type vFileState struct {
@@ -12,24 +16,19 @@ type vFileState struct {
 	file *vFile
 }
 
-type rangeInfo struct {
-	data        common.ClosedInterval
-	checkpoints []common.ClosedInterval
-}
-
 type vFile struct {
 	*sync.RWMutex
 	*os.File
+	vInfo
 	version    int
 	committed  int32
-	info       rangeInfo
-	parentMu   *sync.RWMutex
 	size       int
 	wg         sync.WaitGroup
 	commitCond sync.Cond
+	history    History
 }
 
-func newVFile(mu *sync.RWMutex, name string, version int) (*vFile, error) {
+func newVFile(mu *sync.RWMutex, name string, version int, history History) (*vFile, error) {
 	if mu == nil {
 		mu = new(sync.RWMutex)
 	}
@@ -43,7 +42,48 @@ func newVFile(mu *sync.RWMutex, name string, version int) (*vFile, error) {
 		File:       file,
 		version:    version,
 		commitCond: *sync.NewCond(new(sync.Mutex)),
+		history:    history,
 	}, nil
+}
+
+func (vf *vFile) InCommits(o *common.ClosedInterval) bool {
+	return o.Contains(vf.commits)
+}
+
+// TODO: process multi checkpoints.
+func (vf *vFile) InCheckpoint(o *common.ClosedInterval) bool {
+	if len(vf.checkpoints) == 0 {
+		return true
+	}
+	return o.Contains(vf.checkpoints[0])
+}
+
+func (vf *vFile) MergeCheckpoint(o *common.ClosedInterval) *common.ClosedInterval {
+	if len(vf.checkpoints) == 0 {
+		return o
+	}
+	if o == nil {
+		ret := vf.checkpoints[0]
+		return &ret
+	}
+	o.TryMerge(vf.checkpoints[0])
+	return o
+}
+
+func (vf *vFile) String() string {
+	var w bytes.Buffer
+	w.WriteString(fmt.Sprintf("[%s]%s", vf.Name(), vf.vInfo.String()))
+	return w.String()
+}
+
+func (vf *vFile) Archive() error {
+	if vf.history == nil {
+		if err := vf.Destroy(); err != nil {
+			return err
+		}
+	}
+	vf.history.Append(vf)
+	return nil
 }
 
 func (vf *vFile) Id() int {
@@ -120,7 +160,7 @@ func (vf *vFile) Destroy() error {
 		return err
 	}
 	name := vf.Name()
-	// logutil.Infof("Removing version file: %s", name)
+	log.Infof("Removing version file: %s", name)
 	err := os.Remove(name)
 	return err
 

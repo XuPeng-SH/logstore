@@ -19,7 +19,7 @@ func TestVFile(t *testing.T) {
 	os.RemoveAll(dir)
 	name := "mock"
 	os.MkdirAll(dir, 0755)
-	v0, err := newVFile(nil, MakeVersionFile(dir, name, 0), 0)
+	v0, err := newVFile(nil, MakeVersionFile(dir, name, 0), 0, nil)
 	assert.Nil(t, err)
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -69,6 +69,7 @@ func TestAppender(t *testing.T) {
 	}
 	toWrite := data.Bytes()
 
+	worker, _ := ants.NewPool(1)
 	pool, _ := ants.NewPool(5)
 	var wg sync.WaitGroup
 
@@ -92,8 +93,13 @@ func TestAppender(t *testing.T) {
 		// continue
 		appender := rf.GetAppender()
 		assert.NotNil(t, appender)
-		err = appender.Prepare(len(toWrite))
-		assert.Nil(t, err)
+		if i%4 == 0 && i > 0 {
+			err = appender.Prepare(len(toWrite), &common.ClosedInterval{End: common.GetGlobalSeqNum()})
+			assert.Nil(t, err)
+		} else {
+			err = appender.Prepare(len(toWrite), common.NextGlobalSeqNum())
+			assert.Nil(t, err)
+		}
 
 		f := func(app FileAppender, idx int) func() {
 			return func() {
@@ -107,6 +113,13 @@ func TestAppender(t *testing.T) {
 				assert.Nil(t, err)
 				app.Sync()
 				t.Logf("[%s] takes %s", appender.rollbackState.file.Name(), time.Since(now))
+				assert.Nil(t, err)
+				truncate := func() {
+					defer wg.Done()
+					rf.history.TryTruncate()
+				}
+				wg.Add(1)
+				worker.Submit(truncate)
 			}
 		}
 		wg.Add(1)
@@ -114,4 +127,23 @@ func TestAppender(t *testing.T) {
 	}
 	wg.Wait()
 	t.Logf("1. %s", time.Since(now))
+	t.Log(rf.history.String())
+}
+
+func TestVInfo(t *testing.T) {
+	vinfo := *newVInfo()
+	end := 10
+	for i := 0; i <= end; i++ {
+		err := vinfo.LogCommit(uint64(i))
+		assert.Nil(t, err)
+	}
+	assert.Equal(t, uint64(end), vinfo.commits.End)
+	err := vinfo.LogCommit(uint64(end + 2))
+	assert.NotNil(t, err)
+
+	err = vinfo.LogCheckpoint(common.ClosedInterval{
+		Start: 0,
+		End:   uint64(end / 2),
+	})
+	assert.Nil(t, err)
 }

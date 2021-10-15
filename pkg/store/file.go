@@ -106,6 +106,10 @@ func (rf *rotateFile) scheduleCommit(file *vFile) {
 	rf.commitQueue <- file
 }
 
+func (rf *rotateFile) GetHistory() History {
+	return rf.history
+}
+
 func (rf *rotateFile) Close() error {
 	rf.commitWg.Wait()
 	rf.commitCancel()
@@ -119,7 +123,7 @@ func (rf *rotateFile) Close() error {
 func (rf *rotateFile) scheduleNew() error {
 	fname := MakeVersionFile(rf.dir, rf.name, rf.nextVer)
 	rf.nextVer++
-	vf, err := newVFile(nil, fname, int(rf.nextVer))
+	vf, err := newVFile(nil, fname, int(rf.nextVer), rf.history)
 	if err != nil {
 		return err
 	}
@@ -173,7 +177,7 @@ func (rf *rotateFile) commitFile() {
 		panic("logic error")
 	}
 	rf.uncommitted = rf.uncommitted[1:]
-	rf.history.Append(f)
+	f.Archive()
 	rf.Unlock()
 	fmt.Printf("Committed %s\n", f.Name())
 }

@@ -77,7 +77,7 @@ func (bs *baseStore) onEntries(entries []entry.Entry) {
 	// fmt.Printf("entries %d\n", len(entries))
 	for _, e := range entries {
 		appender := bs.file.GetAppender()
-		if err = appender.Prepare(e.TotalSize()); err != nil {
+		if err = appender.Prepare(e.TotalSize(), e.GetInfo()); err != nil {
 			panic(err)
 		}
 		if _, err = appender.Write(e.GetMetaBuf()); err != nil {

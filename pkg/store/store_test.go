@@ -49,10 +49,15 @@ func TestStore(t *testing.T) {
 		bs.WriteString("helloyou")
 	}
 	buf := bs.Bytes()
-	for i := 0; i < 5; i++ {
+	cnt := 5
+	for i := 0; i < cnt; i++ {
 		e := entry.GetBase()
 		e.SetType(entry.ETFlush)
-		e.SetInfo(common.NextGlobalSeqNum())
+		if i%2 == 0 && i > 0 {
+			e.SetInfo(&common.ClosedInterval{End: common.GetGlobalSeqNum()})
+		} else {
+			e.SetInfo(common.NextGlobalSeqNum())
+		}
 		n := common.GPool.Alloc(uint64(len(buf)))
 		n.Buf = n.Buf[:len(buf)]
 		copy(n.GetBuf(), buf)
@@ -66,4 +71,9 @@ func TestStore(t *testing.T) {
 	fwg.Wait()
 	cancel()
 	wg.Wait()
+
+	h := s.file.GetHistory()
+	t.Log(h.String())
+	err = h.TryTruncate()
+	assert.Nil(t, err)
 }

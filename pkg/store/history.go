@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"logstore/pkg/common"
 	"sync"
 )
 
@@ -38,7 +39,7 @@ func (h *history) String() string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for _, entry := range h.entries {
-		s = fmt.Sprintf("%s\n%s", s, entry.Name())
+		s = fmt.Sprintf("%s\n%s", s, entry.String())
 	}
 	if len(h.entries) > 0 {
 		s = fmt.Sprintf("%s\n}", s)
@@ -116,6 +117,44 @@ func (h *history) EntryIds() []int {
 		ids[idx] = entry.Id()
 	}
 	return ids
+}
+
+type entryWrapper struct {
+	offset int
+	entry  VFile
+}
+
+// One worker
+func (h *history) TryTruncate() error {
+	var gInterval *common.ClosedInterval
+	toDelete := make([]entryWrapper, 0, 4)
+	h.mu.RLock()
+	entries := make([]VFile, len(h.entries))
+	for i, entry := range h.entries {
+		entries[i] = entry
+	}
+	h.mu.RUnlock()
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		wrapper := entryWrapper{entry: e}
+		if e.InCommits(gInterval) && e.InCheckpoint(gInterval) {
+			wrapper.offset = i
+			toDelete = append(toDelete, wrapper)
+			continue
+		}
+		gInterval = e.MergeCheckpoint(gInterval)
+	}
+	h.mu.Lock()
+	for _, wrapper := range toDelete {
+		h.entries = append(h.entries[:wrapper.offset], h.entries[wrapper.offset+1:]...)
+	}
+	h.mu.Unlock()
+	for _, wrapper := range toDelete {
+		if err := wrapper.entry.Destroy(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (h *history) Replay(handle ReplayHandle, observer ReplayObserver) error {

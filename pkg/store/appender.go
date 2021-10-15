@@ -7,6 +7,7 @@ type fileAppender struct {
 	size          int
 	rollbackState *vFileState
 	syncWaited    *vFile
+	info          interface{}
 }
 
 func newFileAppender(rfile *rotateFile) *fileAppender {
@@ -16,7 +17,7 @@ func newFileAppender(rfile *rotateFile) *fileAppender {
 	return appender
 }
 
-func (appender *fileAppender) Prepare(size int) error {
+func (appender *fileAppender) Prepare(size int, info interface{}) error {
 	var err error
 	appender.capacity = size
 	appender.rfile.Lock()
@@ -24,6 +25,7 @@ func (appender *fileAppender) Prepare(size int) error {
 	if appender.syncWaited, appender.rollbackState, err = appender.rfile.makeSpace(size); err != nil {
 		return err
 	}
+	appender.info = info
 	// appender.activeId = appender.rfile.idAlloc.Alloc()
 	return err
 }
@@ -40,7 +42,10 @@ func (appender *fileAppender) Write(data []byte) (int, error) {
 
 func (appender *fileAppender) Commit() error {
 	appender.rollbackState.file.FinishWrite()
-	return nil
+	if appender.info == nil {
+		return nil
+	}
+	return appender.rollbackState.file.Log(appender.info)
 }
 
 func (appender *fileAppender) Rollback() {

@@ -24,10 +24,14 @@ type VFile interface {
 	Destroy() error
 	Id() int
 	Name() string
+	String() string
+	InCheckpoint(*common.ClosedInterval) bool
+	InCommits(*common.ClosedInterval) bool
+	MergeCheckpoint(*common.ClosedInterval) *common.ClosedInterval
 }
 
 type FileAppender interface {
-	Prepare(int) error
+	Prepare(int, interface{}) error
 	Write([]byte) (int, error)
 	Commit() error
 	Rollback()
@@ -59,6 +63,7 @@ type History interface {
 	OldestEntry() VFile
 	Empty() bool
 	Replay(ReplayHandle, ReplayObserver) error
+	TryTruncate() error
 }
 
 type File interface {
@@ -70,6 +75,8 @@ type File interface {
 
 	Sync() error
 	GetAppender() FileAppender
+
+	GetHistory() History
 }
 
 type Store interface {
