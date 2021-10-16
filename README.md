@@ -11,17 +11,17 @@
 - Friendly interface, easy to integrate
 
 ### RFC
-TODO
+> TODO
 
 ## Example
 
-### [WAL](cmd/walexample)
+### [Used as a WAL driver](cmd/walexample)
 
 The full outline of wal commit pipeline operation is as follows:
 ```
                            |--------------- Guarded ------------|   |------------- Concurrent ------------|
   Insert                   |<------------- Preparing ---------->|   |<------------ Committing ------------|
- ---------> OnRequest ---> Alloc LSN ---> Prepare insert into SM --> Fill insert buffer --> Wait sync done ----->  Return response
+ ---------> OnRequest ---> Alloc LSN ---> Prepare insert buffer ---> Fill insert buffer --> Wait sync done ----->  Return response
                                       |                         |                                            |
                                       |                         |                                            |
                                        -> Prepare log to WAL ==>                                             |(Sync done)
@@ -34,3 +34,9 @@ WalSyncer   :                    ----- Sync -----------------> Sync ------------
 
 
 ```
+
+### Used as a metadata-like storage engine
+> TODO
+
+### Used as a columnar storage database storage engine
+> TODO
