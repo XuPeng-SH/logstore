@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/panjf2000/ants/v2"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -25,25 +26,32 @@ func main() {
 		panic(err)
 	}
 	var wg sync.WaitGroup
+	pool, _ := ants.NewPool(100)
 
 	lsn := uint64(0)
-	var bs bytes.Buffer
 	now := time.Now()
-	for i := 0; i < 4000; i++ {
-		bs.WriteString(fmt.Sprintf("request-%d", i))
-		r := &sm.Request{
-			Op:   sm.TInsert,
-			Data: bs.Bytes(),
+	for i := 0; i < 1000; i++ {
+		insert := func() {
+			defer wg.Done()
+			var bs bytes.Buffer
+			i := common.NextGlobalSeqNum()
+			bs.WriteString(fmt.Sprintf("request-%d", i))
+			r := &sm.Request{
+				Op:   sm.TInsert,
+				Data: bs.Bytes(),
+			}
+			if err = machine.OnRequest(r); err != nil {
+				panic(err)
+			}
+			bs.Reset()
 		}
-		if err = machine.OnRequest(r); err != nil {
-			panic(err)
-		}
+		wg.Add(1)
+		pool.Submit(insert)
 		currLsn := machine.VisibleLSN()
 		if currLsn != lsn {
-			// log.Infof("VisibleLSN %d, duration %s", currLsn, time.Since(now))
+			log.Infof("VisibleLSN %d, duration %s", currLsn, time.Since(now))
 			lsn = currLsn
 		}
-		bs.Reset()
 	}
 
 	wg.Wait()

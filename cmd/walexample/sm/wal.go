@@ -4,6 +4,7 @@ import (
 	"logstore/pkg/common"
 	"logstore/pkg/entry"
 	"logstore/pkg/store"
+	"sync"
 )
 
 type OpT = entry.Type
@@ -16,6 +17,7 @@ const (
 )
 
 type simpleWal struct {
+	mu      sync.Mutex
 	driver  store.Store
 	idAlloc common.IdAllocator
 }
@@ -30,13 +32,15 @@ func newSimpleWal(dir, name string, cfg *store.StoreCfg) (*simpleWal, error) {
 
 func (wal *simpleWal) AsyncLog(op OpT, item []byte) (entry.Entry, error) {
 	var err error
-	id := wal.idAlloc.Alloc()
 	e := entry.GetBase()
-	e.SetInfo(id)
 	e.SetType(op)
 	e.SetPayloadSize(len(item))
 	e.Unmarshal(item)
+	wal.mu.Lock()
+	id := wal.idAlloc.Alloc()
+	e.SetInfo(id)
 	err = wal.driver.AppendEntry(e)
+	wal.mu.Unlock()
 	return e, err
 }
 

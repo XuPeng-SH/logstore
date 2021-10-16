@@ -16,26 +16,12 @@ type Request struct {
 	Data []byte
 }
 
-type tuple struct {
-	lsn  uint64
-	data []byte
-}
-
-func newTuple(e entry.Entry) *tuple {
-	row := &tuple{
-		lsn:  e.GetInfo().(uint64),
-		data: make([]byte, e.GetPayloadSize()),
-	}
-	copy(row.data, e.GetPayload())
-	return row
-}
-
 type simpleStateMachine struct {
 	mu      *sync.RWMutex
 	rows    []*tuple
 	visible uint64
 
-	waitingQueue chan entry.Entry
+	waitingQueue chan *pendingEntry
 	loopCancel   context.CancelFunc
 	loopCtx      context.Context
 	loopWg       sync.WaitGroup
@@ -44,6 +30,8 @@ type simpleStateMachine struct {
 	checkpointCancel context.CancelFunc
 	checkpointCtx    context.Context
 	checkpointWg     sync.WaitGroup
+
+	pipeline *writePipeline
 
 	wg  sync.WaitGroup
 	wal *simpleWal
@@ -58,8 +46,11 @@ func NewSimpleStateMachine(dir string, walCfg *store.StoreCfg) (*simpleStateMach
 		mu:              new(sync.RWMutex),
 		wal:             wal,
 		rows:            make([]*tuple, 0, 100),
-		waitingQueue:    make(chan entry.Entry, 1000),
+		waitingQueue:    make(chan *pendingEntry, 1000),
 		checkpointQueue: make(chan struct{}, 100),
+	}
+	sm.pipeline = &writePipeline{
+		sm: sm,
 	}
 	sm.loopCtx, sm.loopCancel = context.WithCancel(context.Background())
 	sm.checkpointCtx, sm.checkpointCancel = context.WithCancel(context.Background())
@@ -83,7 +74,7 @@ func (sm *simpleStateMachine) Close() error {
 	return nil
 }
 
-func (sm *simpleStateMachine) enqueueWait(e entry.Entry) {
+func (sm *simpleStateMachine) enqueueWait(e *pendingEntry) {
 	sm.loopWg.Add(1)
 	sm.waitingQueue <- e
 }
@@ -113,14 +104,14 @@ func (sm *simpleStateMachine) waitLoop() {
 		select {
 		case <-sm.loopCtx.Done():
 			return
-		case e := <-sm.waitingQueue:
-			err := e.WaitDone()
+		case pending := <-sm.waitingQueue:
+			err := pending.entry.WaitDone()
 			if err != nil {
 				panic(err)
 			}
-			visible := e.GetInfo().(uint64)
+			pending.Done()
+			visible := pending.entry.GetInfo().(uint64)
 			atomic.StoreUint64(&sm.visible, visible)
-			e.Free()
 			if visible >= lastCkp+1000 {
 				sm.enqueueCheckpoint()
 				lastCkp = visible
@@ -134,26 +125,27 @@ func (sm *simpleStateMachine) waitLoop() {
 func (sm *simpleStateMachine) OnRequest(r *Request) error {
 	switch r.Op {
 	case TInsert:
-		e, err := sm.wal.AsyncLog(r.Op, r.Data)
-		if err != nil {
-			return err
-		}
-		return sm.doInsert(e)
+		return sm.onInsert(r)
 	}
 	panic("not supported")
+}
+
+func (sm *simpleStateMachine) onInsert(r *Request) error {
+	row, e, err := sm.pipeline.prepare(r)
+	if err != nil {
+		return err
+	}
+	return sm.pipeline.commit(row, e)
 }
 
 func (sm *simpleStateMachine) VisibleLSN() uint64 {
 	return atomic.LoadUint64(&sm.visible)
 }
 
-func (sm *simpleStateMachine) doInsert(e entry.Entry) error {
-	row := newTuple(e)
-	sm.mu.Lock()
+func (sm *simpleStateMachine) prepareInsert() *tuple {
+	row := newEmptyTuple()
 	sm.rows = append(sm.rows, row)
-	sm.enqueueWait(e)
-	sm.mu.Unlock()
-	return nil
+	return row
 }
 
 func (sm *simpleStateMachine) checkpoint() error {
