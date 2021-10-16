@@ -3,6 +3,7 @@ package common
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 )
 
 var (
@@ -50,4 +51,8 @@ func (i *ClosedInterval) TryMerge(o ClosedInterval) bool {
 	}
 
 	return true
+}
+
+func (i *ClosedInterval) AtomicUpdateEnd(v uint64) {
+	atomic.StoreUint64(&i.End, v)
 }

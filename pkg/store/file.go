@@ -3,30 +3,14 @@ package store
 import (
 	"context"
 	"fmt"
+	"logstore/pkg/common"
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 )
 
 func MakeVersionFile(dir, name string, version uint64) string {
 	return fmt.Sprintf("%s-%d%s", filepath.Join(dir, name), version, ".rot")
-}
-
-type idAlloc struct {
-	id uint64
-}
-
-func (id *idAlloc) Get() uint64 {
-	return atomic.LoadUint64(&id.id)
-}
-
-func (id *idAlloc) Alloc() uint64 {
-	return atomic.AddUint64(&id.id, uint64(1))
-}
-
-func (id *idAlloc) Set(val uint64) {
-	atomic.StoreUint64(&id.id, val)
 }
 
 type files struct {
@@ -47,7 +31,7 @@ type rotateFile struct {
 	commitQueue  chan *vFile
 
 	nextVer uint64
-	idAlloc idAlloc
+	idAlloc common.IdAllocator
 
 	wg sync.WaitGroup
 }
