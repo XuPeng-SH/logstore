@@ -82,4 +82,5 @@ type File interface {
 type Store interface {
 	io.Closer
 	AppendEntry(entry.Entry) error
+	TryTruncate() error
 }

@@ -98,6 +98,7 @@ func (rf *rotateFile) Close() error {
 	rf.commitWg.Wait()
 	rf.commitCancel()
 	rf.wg.Wait()
+	// logrus.Info(rf.GetHistory().String())
 	for _, vf := range rf.uncommitted {
 		vf.Close()
 	}

@@ -122,6 +122,10 @@ func (bs *baseStore) Checkpoint(e entry.Entry) (err error) {
 	return bs.AppendEntry(e)
 }
 
+func (bs *baseStore) TryTruncate() error {
+	return bs.file.GetHistory().TryTruncate()
+}
+
 func (bs *baseStore) AppendEntry(e entry.Entry) (err error) {
 	if bs.IsClosed() {
 		return errors.New("closed")
