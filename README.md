@@ -15,7 +15,7 @@
 
 ## Example
 
-### [Used as a WAL driver](cmd/walexample)
+### [Used as a WAL driver](example/wal)
 
 The full outline of wal commit pipeline operation is as follows:
 ```

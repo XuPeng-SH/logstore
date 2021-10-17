@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"logstore/cmd/walexample/sm"
+	"logstore/example/wal/sm"
 	"logstore/pkg/common"
 	"logstore/pkg/store"
 	"os"
