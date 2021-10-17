@@ -3,9 +3,9 @@ package store
 import (
 	"context"
 	"errors"
+	"logstore/pkg/common"
 	"logstore/pkg/entry"
 	"sync"
-	"sync/atomic"
 )
 
 var (
@@ -14,13 +14,13 @@ var (
 
 type baseStore struct {
 	syncBase
+	common.Closable
 	dir, name   string
 	flushWg     sync.WaitGroup
 	flushCtx    context.Context
 	flushCancel context.CancelFunc
 	flushQueue  chan entry.Entry
 	wg          sync.WaitGroup
-	closed      int32
 	file        File
 	mu          *sync.RWMutex
 }
@@ -102,17 +102,13 @@ func (bs *baseStore) onEntries(entries []entry.Entry) {
 }
 
 func (bs *baseStore) Close() error {
-	if !atomic.CompareAndSwapInt32(&bs.closed, int32(0), int32(1)) {
+	if !bs.TryClose() {
 		return nil
 	}
 	bs.flushWg.Wait()
 	bs.flushCancel()
 	bs.wg.Wait()
 	return bs.file.Close()
-}
-
-func (bs *baseStore) IsClosed() bool {
-	return atomic.LoadInt32(&bs.closed) == int32(1)
 }
 
 func (bs *baseStore) Checkpoint(e entry.Entry) (err error) {
@@ -127,13 +123,13 @@ func (bs *baseStore) TryTruncate() error {
 }
 
 func (bs *baseStore) AppendEntry(e entry.Entry) (err error) {
-	if bs.IsClosed() {
-		return errors.New("closed")
+	if bs.Closed() {
+		return common.ClosedErr
 	}
 	bs.flushWg.Add(1)
-	if bs.IsClosed() {
+	if bs.Closed() {
 		bs.flushWg.Done()
-		return errors.New("closed")
+		return common.ClosedErr
 	}
 	bs.flushQueue <- e
 	return nil

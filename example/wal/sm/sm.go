@@ -16,9 +16,11 @@ type Request struct {
 	Data []byte
 }
 
-type simpleStateMachine struct {
+type stateMachine struct {
+	common.Closable
 	mu      *sync.RWMutex
-	rows    []*tuple
+	wal     *Wal
+	rows    []*Row
 	visible uint64
 
 	waitingQueue chan *pendingEntry
@@ -33,25 +35,22 @@ type simpleStateMachine struct {
 
 	pipeline *writePipeline
 
-	wg  sync.WaitGroup
-	wal *simpleWal
+	wg sync.WaitGroup
 }
 
-func NewSimpleStateMachine(dir string, walCfg *store.StoreCfg) (*simpleStateMachine, error) {
-	wal, err := newSimpleWal(dir, "wal", walCfg)
+func NewStateMachine(dir string, walCfg *store.StoreCfg) (*stateMachine, error) {
+	wal, err := newWal(dir, "wal", walCfg)
 	if err != nil {
 		return nil, err
 	}
-	sm := &simpleStateMachine{
+	sm := &stateMachine{
 		mu:              new(sync.RWMutex),
 		wal:             wal,
-		rows:            make([]*tuple, 0, 100),
+		rows:            make([]*Row, 0, 100),
 		waitingQueue:    make(chan *pendingEntry, 1000),
 		checkpointQueue: make(chan struct{}, 100),
 	}
-	sm.pipeline = &writePipeline{
-		sm: sm,
-	}
+	sm.pipeline = newPipeline(sm)
 	sm.loopCtx, sm.loopCancel = context.WithCancel(context.Background())
 	sm.checkpointCtx, sm.checkpointCancel = context.WithCancel(context.Background())
 	sm.wg.Add(1)
@@ -61,30 +60,37 @@ func NewSimpleStateMachine(dir string, walCfg *store.StoreCfg) (*simpleStateMach
 	return sm, nil
 }
 
-func (sm *simpleStateMachine) Close() error {
-	err := sm.wal.driver.Close()
-	if err != nil {
-		return err
+func (sm *stateMachine) Close() error {
+	if !sm.TryClose() {
+		return nil
 	}
 	sm.loopWg.Wait()
 	sm.loopCancel()
 	sm.checkpointWg.Wait()
 	sm.checkpointCancel()
 	sm.wg.Wait()
+	return sm.wal.Close()
+}
+
+func (sm *stateMachine) enqueueWait(e *pendingEntry) error {
+	if sm.Closed() {
+		return common.ClosedErr
+	}
+	sm.loopWg.Add(1)
+	if sm.Closed() {
+		sm.loopWg.Done()
+		return common.ClosedErr
+	}
+	sm.waitingQueue <- e
 	return nil
 }
 
-func (sm *simpleStateMachine) enqueueWait(e *pendingEntry) {
-	sm.loopWg.Add(1)
-	sm.waitingQueue <- e
-}
-
-func (sm *simpleStateMachine) enqueueCheckpoint() {
+func (sm *stateMachine) enqueueCheckpoint() {
 	sm.checkpointWg.Add(1)
 	sm.checkpointQueue <- struct{}{}
 }
 
-func (sm *simpleStateMachine) checkpointLoop() {
+func (sm *stateMachine) checkpointLoop() {
 	defer sm.wg.Done()
 	for {
 		select {
@@ -97,7 +103,7 @@ func (sm *simpleStateMachine) checkpointLoop() {
 	}
 }
 
-func (sm *simpleStateMachine) waitLoop() {
+func (sm *stateMachine) waitLoop() {
 	defer sm.wg.Done()
 	lastCkp := uint64(0)
 	for {
@@ -109,8 +115,8 @@ func (sm *simpleStateMachine) waitLoop() {
 			if err != nil {
 				panic(err)
 			}
-			pending.Done()
 			visible := pending.entry.GetInfo().(uint64)
+			pending.Done()
 			atomic.StoreUint64(&sm.visible, visible)
 			if visible >= lastCkp+1000 {
 				sm.enqueueCheckpoint()
@@ -122,7 +128,7 @@ func (sm *simpleStateMachine) waitLoop() {
 	}
 }
 
-func (sm *simpleStateMachine) OnRequest(r *Request) error {
+func (sm *stateMachine) OnRequest(r *Request) error {
 	switch r.Op {
 	case TInsert:
 		return sm.onInsert(r)
@@ -130,7 +136,7 @@ func (sm *simpleStateMachine) OnRequest(r *Request) error {
 	panic("not supported")
 }
 
-func (sm *simpleStateMachine) onInsert(r *Request) error {
+func (sm *stateMachine) onInsert(r *Request) error {
 	row, e, err := sm.pipeline.prepare(r)
 	if err != nil {
 		return err
@@ -138,29 +144,29 @@ func (sm *simpleStateMachine) onInsert(r *Request) error {
 	return sm.pipeline.commit(row, e)
 }
 
-func (sm *simpleStateMachine) VisibleLSN() uint64 {
+func (sm *stateMachine) VisibleLSN() uint64 {
 	return atomic.LoadUint64(&sm.visible)
 }
 
-func (sm *simpleStateMachine) prepareInsert() *tuple {
-	row := newEmptyTuple()
+func (sm *stateMachine) makeRoomForInsert(buf []byte) *Row {
+	row := newRow()
 	sm.rows = append(sm.rows, row)
 	return row
 }
 
-func (sm *simpleStateMachine) checkpoint() error {
+func (sm *stateMachine) checkpoint() error {
 	e := entry.GetBase()
 	defer e.Free()
 	e.SetType(entry.ETCheckpoint)
 	e.SetInfo(&common.ClosedInterval{
 		End: sm.VisibleLSN(),
 	})
-	err := sm.wal.driver.AppendEntry(e)
+	err := sm.wal.AppendEntry(e)
 	if err != nil {
 		return err
 	}
 	if err = e.WaitDone(); err != nil {
 		return err
 	}
-	return sm.wal.driver.TryTruncate()
+	return sm.wal.TryTruncate()
 }

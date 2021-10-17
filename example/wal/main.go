@@ -21,7 +21,7 @@ func main() {
 	cfg := &store.StoreCfg{
 		RotateChecker: checker,
 	}
-	machine, err := sm.NewSimpleStateMachine(dir, cfg)
+	machine, err := sm.NewStateMachine(dir, cfg)
 	if err != nil {
 		panic(err)
 	}
@@ -40,7 +40,7 @@ func main() {
 				Op:   sm.TInsert,
 				Data: bs.Bytes(),
 			}
-			if err = machine.OnRequest(r); err != nil {
+			if err := machine.OnRequest(r); err != nil {
 				panic(err)
 			}
 			bs.Reset()
