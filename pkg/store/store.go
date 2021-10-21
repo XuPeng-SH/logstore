@@ -14,7 +14,7 @@ var (
 
 type baseStore struct {
 	syncBase
-	common.Closable
+	common.ClosedState
 	dir, name   string
 	flushWg     sync.WaitGroup
 	flushCtx    context.Context
@@ -123,11 +123,11 @@ func (bs *baseStore) TryTruncate() error {
 }
 
 func (bs *baseStore) AppendEntry(e entry.Entry) (err error) {
-	if bs.Closed() {
+	if bs.IsClosed() {
 		return common.ClosedErr
 	}
 	bs.flushWg.Add(1)
-	if bs.Closed() {
+	if bs.IsClosed() {
 		bs.flushWg.Done()
 		return common.ClosedErr
 	}

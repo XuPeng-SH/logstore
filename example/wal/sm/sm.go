@@ -1,9 +1,9 @@
 package sm
 
 import (
-	"context"
 	"logstore/pkg/common"
 	"logstore/pkg/entry"
+	statemachine "logstore/pkg/sm"
 	"logstore/pkg/store"
 	"sync"
 	"sync/atomic"
@@ -17,25 +17,14 @@ type Request struct {
 }
 
 type stateMachine struct {
-	common.Closable
-	mu      *sync.RWMutex
-	wal     *Wal
-	rows    []*Row
-	visible uint64
-
-	waitingQueue chan *pendingEntry
-	loopCancel   context.CancelFunc
-	loopCtx      context.Context
-	loopWg       sync.WaitGroup
-
-	checkpointQueue  chan struct{}
-	checkpointCancel context.CancelFunc
-	checkpointCtx    context.Context
-	checkpointWg     sync.WaitGroup
-
+	common.ClosedState
+	statemachine.StateMachine
+	wal      *Wal
+	mu       *sync.RWMutex
+	rows     []*Row
+	visible  uint64
 	pipeline *writePipeline
-
-	wg sync.WaitGroup
+	lastCkp  uint64
 }
 
 func NewStateMachine(dir string, walCfg *store.StoreCfg) (*stateMachine, error) {
@@ -44,86 +33,47 @@ func NewStateMachine(dir string, walCfg *store.StoreCfg) (*stateMachine, error) 
 		return nil, err
 	}
 	sm := &stateMachine{
-		mu:              new(sync.RWMutex),
-		wal:             wal,
-		rows:            make([]*Row, 0, 100),
-		waitingQueue:    make(chan *pendingEntry, 1000),
-		checkpointQueue: make(chan struct{}, 100),
+		mu:   new(sync.RWMutex),
+		wal:  wal,
+		rows: make([]*Row, 0, 100),
 	}
 	sm.pipeline = newPipeline(sm)
-	sm.loopCtx, sm.loopCancel = context.WithCancel(context.Background())
-	sm.checkpointCtx, sm.checkpointCancel = context.WithCancel(context.Background())
-	sm.wg.Add(1)
-	go sm.checkpointLoop()
-	sm.wg.Add(1)
-	go sm.waitLoop()
+	wg := new(sync.WaitGroup)
+	waitingQueue := statemachine.NewWaitableQueue(1000, 1, sm, wg, nil, nil, sm.onEntries)
+	checkpointQueue := statemachine.NewWaitableQueue(100, 1, sm, wg, nil, nil, sm.checkpoint)
+	sm.StateMachine = statemachine.NewStateMachine(wg, sm, waitingQueue, checkpointQueue)
+	sm.Start()
 	return sm, nil
 }
 
 func (sm *stateMachine) Close() error {
-	if !sm.TryClose() {
-		return nil
-	}
-	sm.loopWg.Wait()
-	sm.loopCancel()
-	sm.checkpointWg.Wait()
-	sm.checkpointCancel()
-	sm.wg.Wait()
+	sm.Stop()
 	return sm.wal.Close()
 }
 
 func (sm *stateMachine) enqueueWait(e *pendingEntry) error {
-	if sm.Closed() {
-		return common.ClosedErr
-	}
-	sm.loopWg.Add(1)
-	if sm.Closed() {
-		sm.loopWg.Done()
-		return common.ClosedErr
-	}
-	sm.waitingQueue <- e
-	return nil
+	_, err := sm.EnqueueRecevied(e)
+	return err
 }
 
 func (sm *stateMachine) enqueueCheckpoint() {
-	sm.checkpointWg.Add(1)
-	sm.checkpointQueue <- struct{}{}
+	sm.EnqueueCheckpoint(struct{}{})
 }
 
-func (sm *stateMachine) checkpointLoop() {
-	defer sm.wg.Done()
-	for {
-		select {
-		case <-sm.checkpointCtx.Done():
-			return
-		case <-sm.checkpointQueue:
-			sm.checkpoint()
-			sm.checkpointWg.Done()
+func (sm *stateMachine) onEntries(items ...interface{}) {
+	for _, item := range items {
+		pending := item.(*pendingEntry)
+		err := pending.entry.WaitDone()
+		if err != nil {
+			panic(err)
 		}
-	}
-}
-
-func (sm *stateMachine) waitLoop() {
-	defer sm.wg.Done()
-	lastCkp := uint64(0)
-	for {
-		select {
-		case <-sm.loopCtx.Done():
-			return
-		case pending := <-sm.waitingQueue:
-			err := pending.entry.WaitDone()
-			if err != nil {
-				panic(err)
-			}
-			visible := pending.entry.GetInfo().(uint64)
-			pending.Done()
-			atomic.StoreUint64(&sm.visible, visible)
-			if visible >= lastCkp+1000 {
-				sm.enqueueCheckpoint()
-				lastCkp = visible
-				logrus.Infof("checkpoint %d", visible)
-			}
-			sm.loopWg.Done()
+		visible := pending.entry.GetInfo().(uint64)
+		pending.Done()
+		atomic.StoreUint64(&sm.visible, visible)
+		if visible >= sm.lastCkp+1000 {
+			sm.enqueueCheckpoint()
+			sm.lastCkp = visible
+			logrus.Infof("checkpoint %d", visible)
 		}
 	}
 }
@@ -154,7 +104,7 @@ func (sm *stateMachine) makeRoomForInsert(buf []byte) *Row {
 	return row
 }
 
-func (sm *stateMachine) checkpoint() error {
+func (sm *stateMachine) checkpoint(_ ...interface{}) {
 	e := entry.GetBase()
 	defer e.Free()
 	e.SetType(entry.ETCheckpoint)
@@ -163,10 +113,10 @@ func (sm *stateMachine) checkpoint() error {
 	})
 	err := sm.wal.AppendEntry(e)
 	if err != nil {
-		return err
+		return
 	}
 	if err = e.WaitDone(); err != nil {
-		return err
+		return
 	}
-	return sm.wal.TryTruncate()
+	sm.wal.TryTruncate()
 }

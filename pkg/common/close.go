@@ -9,15 +9,20 @@ var (
 	ClosedErr = errors.New("closed")
 )
 
-type Closable struct {
+type Closable interface {
+	IsClosed() bool
+	TryClose() bool
+}
+
+type ClosedState struct {
 	closed int32
 }
 
-func (c *Closable) Closed() bool {
+func (c *ClosedState) IsClosed() bool {
 	return atomic.LoadInt32(&c.closed) == int32(1)
 }
 
-func (c *Closable) TryClose() bool {
+func (c *ClosedState) TryClose() bool {
 	if !atomic.CompareAndSwapInt32(&c.closed, int32(0), int32(1)) {
 		return false
 	}
